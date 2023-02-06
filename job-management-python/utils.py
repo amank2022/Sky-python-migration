@@ -11,7 +11,8 @@ import requests
 from psycopg2.extras import RealDictCursor
 from pythonjsonlogger import jsonlogger
 
-vaultUrl = os.environ.get("VAULT_URL").strip()
+# vaultUrl = os.environ.get("VAULT_URL").strip()
+managementUrl = os.environ.get("MANAGEMENT_URL").strip()
 validVaultIds = os.environ.get("VALID_VAULT_IDS").split(",")
 
 connection = psycopg2.connect(
@@ -150,7 +151,63 @@ def SkyflowAuthorization(token, query, vaultId, queryId):
         )
         return {
             "statusCode": responseBody.get("error").get(
-                "http_code", "HTTPStatus.INTERNAL_SERVER_ERROR.value"
+                "http_code", HTTPStatus.INTERNAL_SERVER_ERROR.value
+            ),
+            "error": responseBody.get("error").get(
+                "message", "Got error on Skyflow Authorization"
+            ),
+        }
+
+    if response.status_code != HTTPStatus.OK.value:
+        logger.error(
+            f"""
+            Unable/Fail to call Skyflow API status code: {response.status_code} and \n
+            message: {responseBody}"""
+        )
+
+    return {
+        "statusCode": response.status_code,
+        "requestId": response.headers["x-request-id"],
+        "body": responseBody,
+    }
+
+def SkyflowAuthJobManageAPI(token, vaultId, queryId):
+    """
+    Make a call to skyflow control plan and check authentication
+    or authorization for given user.
+    Args
+       token(str): It is token given in header
+       vaultId(str): It is vault id
+       queryId(str): It is queryId for which setup hasbeen done.
+    Return:
+       It will return dict { "statusCode": '', "requestId": '', "body": ''}
+       if user don't have permission/any error in query then "statusCode"
+       will be !200
+    """
+    logger.info("Initiating SkyflowAuthorization for Job Management")
+
+    url = managementUrl + "/v1/vaults/" + vaultId
+
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": token,
+    }
+
+    logger.info("Initiating Skyflow Request for Authorization")
+    response = requests.get(url, headers=headers)
+    responseBody = response.json()
+
+    if "error" in responseBody:
+
+        logger.error(
+            f"""
+            Unable/Fail to call Skyflow API status code: {response.status_code} and \n
+            message: {responseBody.get('error').get('message', 'Got error on Skyflow Authorization')}"""    # noqa: E501
+        )
+        return {
+            "statusCode": responseBody.get("error").get(
+                "http_code", HTTPStatus.INTERNAL_SERVER_ERROR.value
             ),
             "error": responseBody.get("error").get(
                 "message", "Got error on Skyflow Authorization"
@@ -181,10 +238,10 @@ def GetResposeDict(statusCode, message, body, **extra):
 def GetJobDetail(queryId):
     logger.info("Initiating GetJobDetail")
 
-    select_query = "SELECT query_id, COALESCE(query_secret,''), " \
-                    "COALESCE(job_id, ''), query_status, request_id, " \
+    select_query = "SELECT query_id, COALESCE(query_secret,'') as query_secret, " \
+                    "COALESCE(job_id, '') as job_id, query_status, request_id, " \
                     "query, destination, jti, verification_nonce, " \
-                    "COALESCE(cross_bucket_region, %s) FROM " \
+                    "COALESCE(cross_bucket_region, %s) as cross_bucket_region FROM " \
                     "emr_job_details WHERE query_id=%s"
 
     cursor.execute(select_query, (os.environ.get("REGION"), queryId))

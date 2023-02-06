@@ -150,7 +150,7 @@ def SkyflowAuthorization(token, query, vaultId, queryId):
         )
         return {
             "statusCode": responseBody.get("error").get(
-                "http_code", "HTTPStatus.INTERNAL_SERVER_ERROR.value"
+                "http_code", HTTPStatus.INTERNAL_SERVER_ERROR.value
             ),
             "error": responseBody.get("error").get(
                 "message", "Got error on Skyflow Authorization"
@@ -174,6 +174,7 @@ def SkyflowAuthorization(token, query, vaultId, queryId):
 def GetResposeDict(statusCode, message, body, **extra):
     data = {"body": body, "message": message}
     data.update(extra)
+    print("------------------- data in getresponsedict-----", data)
     responseDict = {"statusCode": statusCode, "body": json.dumps(data)}
     return responseDict
 
@@ -181,15 +182,15 @@ def GetResposeDict(statusCode, message, body, **extra):
 def GetJobDetail(queryId):
     logger.info("Initiating GetJobDetail")
 
-    select_query = "SELECT query_id, COALESCE(query_secret,''), " \
-                    "COALESCE(job_id, ''), query_status, request_id, " \
+    select_query = "SELECT query_id, COALESCE(query_secret,'') as query_secret, " \
+                    "COALESCE(job_id, '') as job_id, query_status, request_id, " \
                     "query, destination, jti, verification_nonce, " \
-                    "COALESCE(cross_bucket_region, %s) FROM " \
+                    "COALESCE(cross_bucket_region, %s) as cross_bucket_region FROM " \
                     "emr_job_details WHERE query_id=%s"
 
     cursor.execute(select_query, (os.environ.get("REGION"), queryId))
     data = cursor.fetchone()
-
+    print("----------------- getjobdetail data:", data)
     return data
 
 

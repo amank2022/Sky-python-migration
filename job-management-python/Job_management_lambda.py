@@ -13,6 +13,7 @@ from utils import (
     ExtractJTI,
     GetResposeDict,
     SkyflowAuthorization,
+    SkyflowAuthJobManageAPI,
     GetJobDetail,
     ValidateAuthScheme,
     ValidateVaultId,
@@ -45,7 +46,7 @@ def CancelEMRJob(jobId):
     
 
 def lambda_handler(event, context):
-    queryId = event.get("pathParameters").get("queyID")
+    queryId = event.get("pathParameters").get("queryID")
 
     logger.info(f"Initiated {source}")
     print("QueryID: ", queryId)
@@ -56,21 +57,8 @@ def lambda_handler(event, context):
     vaultId = event.get("pathParameters").get("vaultID")
     token = event.get("headers").get("Authorization")
 
-    logger.Info(f"Checking record for queryId: {queryId}")
-
-    jobDetail = GetJobDetail(queryId)
-    if not jobDetail:
-        logger.error(f"Failed to get job details for queryId: {queryId}")
-
-        return GetResposeDict(
-            HTTPStatus.NOT_FOUND, "Failed to get job details.", {"QueryID: ", queryId}
-        )
-    
-    logger.info("Successfully Executed query")
-
     responseBody = {
-        "queryId": queryId,
-        "jobId": jobDetail.get("job_id")
+        "queryId": queryId
     }
 
     authSchemeValidation = ValidateAuthScheme(token)
@@ -82,17 +70,17 @@ def lambda_handler(event, context):
     jti = ExtractJTI(token)
     if not jti:
         return GetResposeDict(
-            HTTPStatus.FORBIDDEN.value, "Failed to extract jti.", responseBody
+            HTTPStatus.FORBIDDEN.value, "Failed to extract jti", responseBody
         )
 
     validVaultIdValidation = ValidateVaultId(vaultId)
 
     if not validVaultIdValidation:
         return GetResposeDict(
-            HTTPStatus.FORBIDDEN.value, "Invalid Vault ID.", responseBody
+            HTTPStatus.FORBIDDEN.value, "Invalid Vault ID", responseBody
         )
 
-    authResponse = SkyflowAuthorization(token, jobDetail.get("query"), vaultId, queryId)
+    authResponse = SkyflowAuthJobManageAPI(token, vaultId, queryId)
 
     if "error" in authResponse:
         return GetResposeDict(
@@ -110,13 +98,22 @@ def lambda_handler(event, context):
 
     logger.info(authResponse)
     logger.info(
-        f"""skyflowRequestId: {authResponse["requestId"]},\n
-        query: {jobDetail.get("query")},\n
-        destinationBucket: {jobDetail.get("destination")},\n
-        region: {jobDetail.get("cross_bucket_region")}"""
+        f"skyflowRequestId: {authResponse['requestId']}"
     )
 
     logger.info("Sucessfully Authorized")
+
+    logger.info(f"Checking record for queryId: {queryId}")
+    
+    jobDetail = GetJobDetail(queryId)
+    if not jobDetail:
+        logger.error(f"Failed to get job details for queryId: {queryId}")
+
+        return GetResposeDict(
+            HTTPStatus.NOT_FOUND, f"Failed to check record for queryId: {queryId}", {"QueryID": queryId}
+        )
+    
+    logger.info("Successfully Executed query")
 
 
     if event.get("httpMethod") == "GET":

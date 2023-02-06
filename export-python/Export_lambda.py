@@ -37,7 +37,7 @@ region = os.environ.get("REGION")
 # create session of aws
 
 
-def CheckVerificationNonce(querySecret, verificationNonce, destination, queryId):
+def CheckVerificationNonce(querySecret, verificationNonce, destination, queryId, crossBucketRegion):
 
     s3_uri = urlparse(destination)
     
@@ -52,7 +52,7 @@ def CheckVerificationNonce(querySecret, verificationNonce, destination, queryId)
         nonceFilePath = "query-" + queryId + "-nonce"
         
     nonce_verification_role_arn = os.environ.get("NONCE_VERIFICATION_ROLE_ARN")
-    logger.error(f"Bucket Name: {bucketName}, Nonce Filpath: {nonceFilePath}, Query Secret: {querySecret}, nonce_verification_role_arn: {nonce_verification_role_arn}")
+    logger.info(f"Bucket Name: {bucketName}, Nonce Filepath: {nonceFilePath}, Query Secret: {querySecret}, nonce_verification_role_arn: {nonce_verification_role_arn}, crossBucketRegion:{crossBucketRegion}")
     
     boto_sts=boto3.client('sts')
     stsresponse = boto_sts.assume_role(
@@ -80,8 +80,9 @@ def CheckVerificationNonce(querySecret, verificationNonce, destination, queryId)
             "s3",
             aws_access_key_id=newsession_id,
             aws_secret_access_key=newsession_key,
-            aws_session_token=newsession_token
-            )
+            aws_session_token=newsession_token,
+            region_name=crossBucketRegion,
+        )
     except Exception as err:
         logger.error(f"Got error on Verification Nonce: {err}")
         raise Exception(err)
@@ -119,7 +120,9 @@ def TriggerEMRJob(query, queryId):
             },
             configurationOverrides={
                 "monitoringConfiguration": {
-                    "s3MonitoringConfiguration": logUri
+                    "s3MonitoringConfiguration": {
+                        "logUri": logUri
+                    }
                 }
             },
         )
@@ -136,26 +139,26 @@ def LogJob(queryId, jobId, queryStatus, requestId, query, destination, cross_buc
 
     statement = "UPDATE emr_job_details SET job_id=%s, query_status=%s  WHERE query_id=%s"
 
-    logger.Info(f"Updating record for jobId: {jobId} & requestId:{requestId}")
+    logger.info(f"Updating record for jobId: {jobId} & requestId:{requestId}")
 
     try:
         cursor.execute(statement, (jobId, queryStatus, queryId))
         connection.commit()
-        cursor.close()
+        # cursor.close()
     
     except Exception:
         logger.error("Something went wrong while inserting into database.")
         message = "Something went wrong! Please contact Skyflow administrative team."
         raise Exception(message)
 
-    logger.Info(f"Successfully logged jobId: {jobId} & requestId:{requestId}")
+    logger.info(f"Successfully logged jobId: {jobId} & requestId:{requestId}")
     
     # return True
 
 
 def lambda_handler(event, context):
 
-    queryId = event.get("pathParameters").get("queyID")
+    queryId = event.get("pathParameters").get("queryID")
 
     logger.info(f"Initiated {source}")
     print("QueryID: ", queryId)
@@ -164,27 +167,28 @@ def lambda_handler(event, context):
     logger.info(f"Client IP address: {clientIpAddress}")
 
     jobDetail = GetJobDetail(queryId)
+    
     if not jobDetail:
         logger.error(f"Failed to get job details for queryId: {queryId}")
 
         return GetResposeDict(
-            HTTPStatus.NOT_FOUND, "Failed to get job details.", {"QueryID: ", queryId}
+            HTTPStatus.NOT_FOUND, f"Failed to check record for queryId: {queryId}", {"QueryID": queryId}
         )
-
-    if jobDetail.get("query_status") == "READY":
+    print("jobDetail: ",jobDetail)
+    if jobDetail.get("query_status") != "READY":
         logger.info("Job has already been started and cannot be triggered again.")
 
         return GetResposeDict(
-            HTTPStatus.NOT_FOUND,
+            HTTPStatus.BAD_REQUEST,
             "Job has already been started and cannot be triggered again.",
-            {"QueryID: ", queryId},
+            {"QueryID": queryId},
         )
 
     responseBody = {
         "queryId": queryId,
         "query": jobDetail.get("query"),
         "destinationBucket": jobDetail.get("destination"),
-        "region": jobDetail.get("cross_bucket_region"),
+        "region": jobDetail.get("cross_bucket_region")
     }
 
     logger.info(
@@ -204,17 +208,30 @@ def lambda_handler(event, context):
     jti = ExtractJTI(token)
     if not jti:
         return GetResposeDict(
-            HTTPStatus.FORBIDDEN.value, "Failed to extract jti.", responseBody
+            HTTPStatus.FORBIDDEN.value, "Failed to extract jti", responseBody
         )
 
     validVaultIdValidation = ValidateVaultId(vaultId)
 
     if not validVaultIdValidation:
         return GetResposeDict(
-            HTTPStatus.FORBIDDEN.value, "Invalid Vault ID.", responseBody
+            HTTPStatus.FORBIDDEN.value, "Invalid Vault ID", responseBody
         )
 
     authResponse = SkyflowAuthorization(token, jobDetail.get("query"), vaultId, queryId)
+    # authResponse= {
+    #     "level": "info",
+    #     "msg": {
+    #         "statusCode": 200,
+    #         "requestId": "b9ee6ed4-5abc-9fe8-8303-95f4afe6b23f",
+    #         "body": {"records": []},
+    #     },
+    #     "time": "2022-12-26T07:31:49.657081Z",
+    #     "source": None,
+    #     "statusCode": 200,
+    #     "requestId": "b9ee6ed4-5abc-9fe8-8303-95f4afe6b23f",
+    #     "body": {"records": []},
+    # }
 
     if "error" in authResponse:
         return GetResposeDict(
@@ -253,12 +270,12 @@ def lambda_handler(event, context):
     
     except Exception as err:
         return GetResposeDict(
-            HTTPStatus.UNAUTHORIZED, err, responseBody
+            HTTPStatus.UNAUTHORIZED, str(err), responseBody
         )
 
     if not verified_nonce:
         return GetResposeDict(
-            HTTPStatus.FORBIDDEN.value, "Invalid Verifiaction Nonce.", responseBody
+            HTTPStatus.FORBIDDEN.value, "Invalid Verification Nonce.", responseBody
         )
 
     logger.info(
@@ -270,7 +287,7 @@ def lambda_handler(event, context):
     
     except Exception as err:
         return GetResposeDict(
-            HTTPStatus.INTERNAL_SERVER_ERROR, err, responseBody
+            HTTPStatus.INTERNAL_SERVER_ERROR, str(err), responseBody
         )
 
     queryStatus = "INITIATED"
@@ -290,7 +307,7 @@ def lambda_handler(event, context):
 
     except Exception as err:
         return GetResposeDict(
-            HTTPStatus.INTERNAL_SERVER_ERROR, err, responseBody
+            HTTPStatus.INTERNAL_SERVER_ERROR, str(err), responseBody
         )
 
     responseBody = {
